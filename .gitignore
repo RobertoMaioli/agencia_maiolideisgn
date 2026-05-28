@@ -1,1 +1,25 @@
+# Segredos e ambiente
 .env
+.env.local
+.env.*.local
+
+# Projetos gerados dinamicamente pelos agentes
+projetos/
+
+# Certificado SSL (específico do servidor)
+.well-known/
+
+# Arquivos do servidor web
+.user.ini
+.htpasswd
+
+# Arquivos temporários e de teste
+teste.php
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
