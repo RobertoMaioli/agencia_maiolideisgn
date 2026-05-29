@@ -1,87 +1,8 @@
-// ─── Bolhas de fala ───────────────────────────────────────────
-const activeBubbles = [];
-
-function spawnBubble(agent, text) {
-  const layer = document.getElementById('bubbles-layer');
-  const el = document.createElement('div');
-  el.className = 'speech-bubble';
-  const color = getAgentColor(agent.slug);
-  el.innerHTML = `<div class="bubble-name" style="color:${color}">${agent.name}</div>${text}`;
-  layer.appendChild(el);
-
-  activeBubbles.push({
-    el,
-    agent,
-    born: Date.now(),
-    life: 6000 + text.length * 40,
-  });
-
-  const ap = document.getElementById('ap-' + agent.slug);
-  if (ap) {
-    ap.classList.add('active');
-    setTimeout(() => ap.classList.remove('active'), 4000);
-  }
-}
-
-function updateBubblePositions(camX, camY) {
-  const now = Date.now();
-  const container = document.getElementById('game-container');
-  const rect = container.getBoundingClientRect();
-
-  for (let i = activeBubbles.length - 1; i >= 0; i--) {
-    const b = activeBubbles[i];
-    const age = now - b.born;
-
-    if (age > b.life) {
-      b.el.remove();
-      activeBubbles.splice(i, 1);
-      continue;
-    }
-
-    const screenX = b.agent.pos_x * (16 * 2.5) - camX + rect.left;
-    const screenY = b.agent.pos_y * (16 * 2.5) - camY + rect.top;
-    const fade = age > b.life - 700 ? 1 - (age - (b.life - 700)) / 700 : 1;
-
-    b.el.style.opacity = String(fade);
-    b.el.style.left = Math.max(4, Math.min(window.innerWidth - 200, screenX - 10)) + 'px';
-    b.el.style.top  = Math.max(44, screenY - 90) + 'px';
-  }
-}
-
-function startIdleMessages() {
-  // desativado
-}
-
-// ─── Painel de projetos ───────────────────────────────────────
-function addProjectToPanel(task, url) {
-  const list = document.getElementById('projects-list');
-  const empty = list.querySelector('.no-projects');
-  if (empty) empty.remove();
-
-  const time = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  const name = task.length > 22 ? task.substring(0, 22) + '...' : task;
-
-  const item = document.createElement('a');
-  item.className = 'project-item';
-  item.href = url;
-  item.target = '_blank';
-  item.innerHTML = `
-    <span class="project-icon">🌐</span>
-    <div class="project-info">
-      <div class="project-name">${name}</div>
-      <div class="project-time">${time}</div>
-    </div>
-    <span class="project-badge">ver</span>
-  `;
-  list.prepend(item);
-}
-
 // ─── Chat ao vivo ─────────────────────────────────────────────
-function addChatMessage(name, text, color, isUser) {
+function addChatMessage(name, text, color, isUser = false) {
   const container = document.getElementById('chat-messages');
-  const time = new Date().toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
-  const typing = container.querySelector('.chat-typing');
-  if (typing) typing.remove();
+  const now  = new Date();
+  const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
 
   const msg = document.createElement('div');
   msg.className = 'chat-msg' + (isUser ? ' user-msg' : '');
@@ -98,7 +19,7 @@ function addChatMessage(name, text, color, isUser) {
 
 function showTypingIndicator(name, color) {
   const container = document.getElementById('chat-messages');
-  const existing = container.querySelector('.chat-typing');
+  const existing  = container.querySelector('.chat-typing');
   if (existing) existing.remove();
 
   const el = document.createElement('div');
@@ -120,35 +41,39 @@ function removeTypingIndicator() {
 
 function setAgentThinking(slug, thinking) {
   if (!window._thinkingAgents) window._thinkingAgents = new Set();
-  if (thinking) {
-    window._thinkingAgents.add(slug);
-  } else {
-    window._thinkingAgents.delete(slug);
-  }
+  thinking
+    ? window._thinkingAgents.add(slug)
+    : window._thinkingAgents.delete(slug);
 }
 
 // ─── Chamada individual de agente ─────────────────────────────
-async function callAgent(agent, task, projectName, prevReply) {
+// projectId é passado em todas as chamadas a partir da segunda,
+// para o backend persistir o estado do pipeline no banco
+// (em vez de depender da $_SESSION que se perdia entre requests)
+async function callAgent(agent, task, projectName, prevReply, projectId = 0) {
   if (agent.slug === 'dev') {
     await new Promise(r => setTimeout(r, 3000));
   }
 
-    setAgentThinking(agent.slug, true);
-    spawnBubble(agent, '...');
-    showTypingIndicator(agent.name, getAgentColor(agent.slug));
-    await new Promise(r => setTimeout(r, 900 + Math.random() * 600));
+  setAgentThinking(agent.slug, true);
+  spawnBubble(agent, '...');
+  showTypingIndicator(agent.name, getAgentColor(agent.slug));
+  await new Promise(r => setTimeout(r, 900 + Math.random() * 600));
+
+  const payload = {
+    task,
+    project_name: projectName,
+    agent_id:     agent.id,
+    agent_slug:   agent.slug,
+    prev_reply:   prevReply,
+    project_id:   projectId,   // ← novo: garante continuidade do pipeline
+  };
 
   try {
-    const res = await fetch('/api/task.php', {
-      method: 'POST',
+    const res  = await fetch('/api/task.php', {
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task,
-        project_name: projectName,
-        agent_id:     agent.id,
-        agent_slug:   agent.slug,
-        prev_reply:   prevReply,
-      }),
+      body:    JSON.stringify(payload),
     });
 
     const data = await res.json();
@@ -167,7 +92,7 @@ async function callAgent(agent, task, projectName, prevReply) {
     setAgentThinking(agent.slug, false);
     return data;
 
-  } catch(e) {
+  } catch (e) {
     activeBubbles
       .filter(b => b.agent.id === agent.id)
       .forEach(b => { b.life = 0; });
@@ -177,16 +102,10 @@ async function callAgent(agent, task, projectName, prevReply) {
 
     await new Promise(r => setTimeout(r, 8000));
 
-    const res2 = await fetch('/api/task.php', {
-      method: 'POST',
+    const res2  = await fetch('/api/task.php', {
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task,
-        project_name: projectName,
-        agent_id:     agent.id,
-        agent_slug:   agent.slug,
-        prev_reply:   prevReply,
-      }),
+      body:    JSON.stringify(payload),   // reutiliza o mesmo payload (com project_id)
     });
 
     const data2 = await res2.json();
@@ -197,15 +116,15 @@ async function callAgent(agent, task, projectName, prevReply) {
 
     if (data2.reply && !data2.reply.includes('Não consegui processar')) {
       spawnBubble(agent, data2.reply);
-        addChatMessage(agent.name, data2.reply, getAgentColor(agent.slug), false);
-        setAgentThinking(agent.slug, false);
-        return data2;
+      addChatMessage(agent.name, data2.reply, getAgentColor(agent.slug), false);
+      setAgentThinking(agent.slug, false);
+      return data2;
     }
 
     spawnBubble(agent, '❌ Modelo indisponível.');
     addChatMessage(agent.name, '❌ Modelo indisponível. Tente novamente.', getAgentColor(agent.slug), false);
     setAgentThinking(agent.slug, false);
-    return { reply: null, file_url: null, failed: true };
+    return { reply: null, file_url: null, project_id: projectId, failed: true };
   }
 }
 
@@ -234,14 +153,22 @@ async function sendTask() {
   const agentList = [...AGENTS_DATA];
   const devAgent  = agentList.find(a => a.slug === 'dev');
   const qaAgent   = agentList.find(a => a.slug === 'qa');
-  let prevReply   = '';
+
+  let prevReply = '';
+  let projectId = 0;   // ← será preenchido na resposta do primeiro agente
 
   // ─── Pipeline principal ───────────────────────────────────
   for (const agent of agentList) {
     status.textContent = `${agent.name} está pensando...`;
 
     try {
-      const data = await callAgent(agent, task, projectName, prevReply);
+      const data = await callAgent(agent, task, projectName, prevReply, projectId);
+
+      // Captura o project_id criado pelo backend no primeiro agente
+      // e propaga para todos os agentes seguintes
+      if (data.project_id && !projectId) {
+        projectId = data.project_id;
+      }
 
       // Agente falhou — para o pipeline
       if (data.failed) {
@@ -253,9 +180,9 @@ async function sendTask() {
         ? data.reply.substring(0, 300) + '...'
         : (data.reply || '');
 
-      // QA reprovou?
+      // QA reprovou — Dev corrige e QA revisa de novo
       if (agent.slug === 'qa' && !data.file_url) {
-        const lower = (data.reply || '').toLowerCase();
+        const lower    = (data.reply || '').toLowerCase();
         const reproved = lower.includes('reprovado')
           || lower.includes('ajuste')
           || lower.includes('corrigir')
@@ -265,11 +192,11 @@ async function sendTask() {
         if (reproved && devAgent && qaAgent) {
           addChatMessage('Sistema', '🔄 QA reprovou. Dev vai aplicar correções...', '#fbbf24', false);
 
-          // Dev corrige
           status.textContent = 'Dev aplicando correções...';
           const devData = await callAgent(
             devAgent, task, projectName,
-            `QA reprovou e pediu: "${data.reply}". Corrija o HTML e retorne o código completo corrigido.`
+            `QA reprovou e pediu: "${data.reply}". Corrija o HTML e retorne o código completo corrigido.`,
+            projectId
           );
 
           if (devData.failed) {
@@ -279,15 +206,15 @@ async function sendTask() {
 
           await new Promise(r => setTimeout(r, 5000));
 
-          // QA revisa novamente
           status.textContent = 'QA revisando correções...';
           const qaData2 = await callAgent(
             qaAgent, task, projectName,
-            'Dev aplicou as correções. Revise novamente e responda com ✅ APROVADO ou ❌ REPROVADO.'
+            'Dev aplicou as correções. Revise novamente e responda com ✅ APROVADO ou ❌ REPROVADO.',
+            projectId
           );
 
           if (qaData2.file_url) {
-            addProjectToPanel(task, qaData2.file_url);
+            addProjectToPanel(projectName || task, qaData2.file_url);
           }
 
           break;
@@ -297,7 +224,7 @@ async function sendTask() {
       prevReply = data.file_url ? 'Arquivo gerado com sucesso.' : replyPreview;
 
       if (data.file_url) {
-        addProjectToPanel(task, data.file_url);
+        addProjectToPanel(projectName || task, data.file_url);
       }
 
     } catch (e) {
@@ -314,6 +241,21 @@ async function sendTask() {
   taskRunning  = false;
   btn.disabled = false;
   document.getElementById('active-task-tag').style.display = 'none';
+}
+
+// ─── Painel de projetos ───────────────────────────────────────
+function addProjectToPanel(name, url) {
+  const list = document.getElementById('projects-list');
+  const empty = list.querySelector('.no-projects');
+  if (empty) empty.remove();
+
+  const item = document.createElement('div');
+  item.className = 'project-panel-item';
+  item.innerHTML = `
+    <span class="project-panel-name">${name || 'Projeto'}</span>
+    <a href="${url}" target="_blank" class="project-panel-link">ver →</a>
+  `;
+  list.prepend(item);
 }
 
 // ─── Eventos ──────────────────────────────────────────────────

@@ -110,7 +110,7 @@ $agents = $stmt->fetchAll();
   const CLIENT_DATA = <?= json_encode($client) ?>;
 </script>
 <script src="/assets/js/game.js?13"></script>
-<script src="/assets/js/agency.js?13"></script>
+<script src="/assets/js/agency.js?14"></script>
 </body>
 </html>
 
