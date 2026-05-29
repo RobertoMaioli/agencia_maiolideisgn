@@ -44,10 +44,17 @@ if (!$agent) {
     exit;
 }
 
-// Verifica chaves
-$anthropicKey  = env('ANTHROPIC_KEY');
-$openaiKey     = env('OPENAI_KEY');
-$openrouterKey = env('OPENROUTER_KEY');
+// ✅ CORRIGIDO: Busca chaves do BANCO primeiro, fallback para .env
+$settingsStmt = db()->prepare('SELECT * FROM settings WHERE client_id = ? LIMIT 1');
+$settingsStmt->execute([$client['id']]);
+$settingsRow = $settingsStmt->fetch() ?: [];
+
+$anthropicKey  = !empty($settingsRow['anthropic_key'])  ? $settingsRow['anthropic_key']  : env('ANTHROPIC_KEY');
+$openaiKey     = !empty($settingsRow['openai_key'])      ? $settingsRow['openai_key']      : env('OPENAI_KEY');
+$openrouterKey = !empty($settingsRow['openrouter_key'])  ? $settingsRow['openrouter_key']  : env('OPENROUTER_KEY');
+
+// Log para diagnóstico
+error_log("KEYS — anthropic:" . (empty($anthropicKey) ? 'VAZIA' : 'ok') . " openai:" . (empty($openaiKey) ? 'VAZIA' : 'ok') . " openrouter:" . (empty($openrouterKey) ? 'VAZIA' : 'ok'));
 
 // Contexto limitado
 $prevContext = '';
@@ -129,14 +136,18 @@ function callProvider(array $agent, string $userMsg, string $anthropicKey, strin
 }
 
 function callAnthropic(string $key, string $model, string $system, string $userMsg, string $agentSlug = ''): string {
-    $maxTokens = ($agentSlug === 'qa') ? 600 : 400;
+    // ✅ CORRIGIDO: tokens adequados por agente
+    $maxTokens = match($agentSlug) {
+        'dev'   => 6000,
+        'qa'    => 800,
+        default => 500,
+    };
+
     $payload = json_encode([
         'model'      => $model,
         'max_tokens' => $maxTokens,
         'system'     => $system,
-        'messages'   => [
-            ['role' => 'user', 'content' => $userMsg],
-        ],
+        'messages'   => [['role' => 'user', 'content' => $userMsg]],
     ]);
 
     $ch = curl_init('https://api.anthropic.com/v1/messages');
@@ -149,7 +160,7 @@ function callAnthropic(string $key, string $model, string $system, string $userM
             'x-api-key: ' . $key,
             'anthropic-version: 2023-06-01',
         ],
-        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_TIMEOUT        => 180, // ✅ CORRIGIDO: era 30s
         CURLOPT_CONNECTTIMEOUT => 10,
     ]);
 
@@ -158,9 +169,13 @@ function callAnthropic(string $key, string $model, string $system, string $userM
     $curlError = curl_error($ch);
     curl_close($ch);
 
-    error_log("Anthropic [$model] HTTP:$httpCode CURL:$curlError");
+    error_log("Anthropic [$agentSlug/$model] HTTP:$httpCode ERR:" . ($curlError ?: 'none'));
 
-    if ($httpCode !== 200 || $curlError) {
+    if ($curlError) return 'Não consegui processar agora. Tente novamente.';
+    if ($httpCode !== 200) {
+        $data = json_decode($response, true);
+        $errMsg = $data['error']['message'] ?? "HTTP $httpCode";
+        error_log("Anthropic erro: $errMsg");
         return 'Não consegui processar agora. Tente novamente.';
     }
 
@@ -169,11 +184,16 @@ function callAnthropic(string $key, string $model, string $system, string $userM
 }
 
 function callOpenAI(string $key, string $model, string $system, string $userMsg, string $agentSlug = ''): string {
-    $maxTokens = ($agentSlug === 'dev') ? 3500 : 400;
+    // ✅ CORRIGIDO: tokens adequados por agente
+    $maxTokens = match($agentSlug) {
+        'dev'   => 6000,
+        'qa'    => 800,
+        default => 500,
+    };
 
     $payload = json_encode([
-        'model'    => $model,
-        'messages' => [
+        'model'      => $model,
+        'messages'   => [
             ['role' => 'system', 'content' => $system],
             ['role' => 'user',   'content' => $userMsg],
         ],
@@ -189,7 +209,7 @@ function callOpenAI(string $key, string $model, string $system, string $userMsg,
             'Content-Type: application/json',
             'Authorization: Bearer ' . $key,
         ],
-        CURLOPT_TIMEOUT        => 120,
+        CURLOPT_TIMEOUT        => 180, // ✅ CORRIGIDO: padronizado
         CURLOPT_CONNECTTIMEOUT => 10,
     ]);
 
@@ -198,9 +218,13 @@ function callOpenAI(string $key, string $model, string $system, string $userMsg,
     $curlError = curl_error($ch);
     curl_close($ch);
 
-    error_log("OpenAI [$model] HTTP:$httpCode CURL:$curlError");
+    error_log("OpenAI [$agentSlug/$model] HTTP:$httpCode ERR:" . ($curlError ?: 'none'));
 
-    if ($httpCode !== 200 || $curlError) {
+    if ($curlError) return 'Não consegui processar agora. Tente novamente.';
+    if ($httpCode !== 200) {
+        $data = json_decode($response, true);
+        $errMsg = $data['error']['message'] ?? "HTTP $httpCode";
+        error_log("OpenAI erro: $errMsg");
         return 'Não consegui processar agora. Tente novamente.';
     }
 
@@ -209,7 +233,11 @@ function callOpenAI(string $key, string $model, string $system, string $userMsg,
 }
 
 function callOpenRouter(string $key, string $model, string $system, string $userMsg, string $agentSlug = ''): string {
-    $maxTokens = ($agentSlug === 'dev') ? 3500 : 400;
+    $maxTokens = match($agentSlug) {
+        'dev'   => 6000,
+        'qa'    => 800,
+        default => 500,
+    };
 
     $payload = json_encode([
         'model'             => $model,
@@ -248,7 +276,7 @@ function callOpenRouter(string $key, string $model, string $system, string $user
         $curlError = curl_error($ch);
         curl_close($ch);
 
-        error_log("OpenRouter [$model] tentativa $attempt HTTP:$httpCode");
+        error_log("OpenRouter [$agentSlug/$model] tentativa $attempt HTTP:$httpCode");
 
         if ($httpCode === 429) { sleep(5); continue; }
         if ($httpCode !== 200 || $curlError) {
@@ -282,45 +310,43 @@ function cleanMarkdown(string $text): string {
     $text = preg_replace('/\*(.+?)\*/', '$1', $text);
     $text = preg_replace('/__(.+?)__/', '$1', $text);
     $text = preg_replace('/_(.+?)_/', '$1', $text);
-    $text = preg_replace('/^#{1,6}\s+/m', '', $text);
-    $text = preg_replace('/^[\*\-\+]\s+/m', '', $text);
-    $text = preg_replace('/^\d+\.\s+/m', '', $text);
+    $text = preg_replace('/#{1,6}\s*(.+)/', '$1', $text);
+    $text = preg_replace('/^\s*[-*+]\s+/m', '', $text);
+    $text = preg_replace('/^\s*\d+\.\s+/m', '', $text);
     $text = preg_replace('/\[([^\]]+)\]\([^\)]+\)/', '$1', $text);
-    $text = strip_tags($text);
     $text = preg_replace('/\n{3,}/', "\n\n", $text);
-    $text = mb_substr(trim($text), 0, 300);
-    return $text;
+    return trim($text);
 }
 
 function containsHtml(string $text): bool {
-    // Remove cercas de markdown antes de verificar
-    $clean = preg_replace('/^```[a-z]*\n?/m', '', $text);
-    $clean = preg_replace('/```$/m', '', $clean);
-    return stripos($clean, '<html')     !== false
-        || stripos($clean, '<!DOCTYPE') !== false
-        || (stripos($clean, '<body') !== false && stripos($clean, '<head') !== false);
+    return stripos($text, '<html') !== false
+        || stripos($text, '<!DOCTYPE') !== false
+        || (stripos($text, '<div') !== false && stripos($text, '</div>') !== false);
 }
+
 function containsCompleteHtml(string $text): bool {
-    return containsHtml($text) && stripos($text, '</html>') !== false;
+    return (stripos($text, '<html') !== false || stripos($text, '<!DOCTYPE') !== false)
+        && stripos($text, '</html>') !== false;
 }
 
-function saveProjectFile(string $task, string $html, array $client): string {
-    $slug = $_SESSION['current_project_slug'] ?? slugify($task) . '-' . date('His');
-    $dir  = __DIR__ . '/../projetos/' . $slug;
+function saveProjectFile(string $task, string $html, array $client): ?string {
+    $slug    = slugify($task) . '-' . date('His');
+    $dir     = __DIR__ . '/../projetos/' . $slug;
+    $urlPath = '/projetos/' . $slug . '/index.html';
 
-    if (!is_dir($dir)) mkdir($dir, 0755, true);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0755, true);
+    }
 
-    // Remove cercas de markdown
-    $html = preg_replace('/^```[a-z]*\n?/m', '', $html);
-    $html = preg_replace('/```\s*$/m', '', $html);
+    file_put_contents($dir . '/index.html', $html);
 
-    preg_match('/(<!DOCTYPE.*<\/html>)/si', $html, $matches);
-    $cleanHtml = $matches[1] ?? $html;
+    if (!empty($_SESSION['current_project_id'])) {
+        $stmt = db()->prepare('UPDATE projects SET slug = ?, status = "done" WHERE id = ?');
+        $stmt->execute([$slug, $_SESSION['current_project_id']]);
+        $_SESSION['current_project_slug'] = $slug;
+    }
 
-    file_put_contents($dir . '/index.html', $cleanHtml);
-
-    $baseUrl = $_ENV['APP_URL'] ?? 'https://agencia.maiolidesign.com.br';
-    return $baseUrl . '/projetos/' . $slug . '/index.html';
+    return $urlPath;
 }
 
 function slugify(string $text): string {
